@@ -36,7 +36,7 @@ EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 # =============================================================================
 def run_model_b_pipeline(accounts, contacts, emails, webinars, quotes, proposals) -> pd.DataFrame:
     EVAL = pd.Timestamp("2024-09-15")
-    
+
     accounts = accounts.copy()
     contacts = contacts.copy()
     emails = emails.copy()
@@ -50,7 +50,7 @@ def run_model_b_pipeline(accounts, contacts, emails, webinars, quotes, proposals
             accounts[col] = accounts[col].fillna("").astype(str)
         else:
             accounts[col] = ""
-    
+
     for col in ["attended", "downloaded", "live", "minutes", "polls", "questions"]:
         if col in webinars.columns:
             webinars[col] = pd.to_numeric(webinars[col], errors="coerce").fillna(0).astype(int)
@@ -60,7 +60,7 @@ def run_model_b_pipeline(accounts, contacts, emails, webinars, quotes, proposals
     # Scoring configurations
     TIER_POINTS = {"generic": 2, "content": 5, "product": 8, "high_intent": 20}
     TIER_HL = {"generic": 60, "content": 60, "product": 45, "high_intent": 30}
-    
+
     emails["points"] = emails["link_category"].map(TIER_POINTS).fillna(0)
     emails["hl"] = emails["link_category"].map(TIER_HL).fillna(60)
     emails["days_since"] = (EVAL - pd.to_datetime(emails["event_date"])).dt.days.clip(lower=0)
@@ -91,18 +91,18 @@ def run_model_b_pipeline(accounts, contacts, emails, webinars, quotes, proposals
         ms = 10 if distinct >= 2 else 0
         ae = round(best + 0.3 * others + ms, 2) if best > 0 else 0
         rows.append((acc_id, best, round(others, 2), distinct, ms, ae))
-    
+
     acc_eng = pd.DataFrame(rows, columns=["account_id", "best_contact", "other_contacts", "distinct_engaged", "ms_bonus", "account_engagement"])
     broker_eng_map = dict(zip(acc_eng["account_id"], acc_eng["account_engagement"]))
-    
+
     accounts = accounts.merge(acc_eng, on="account_id", how="left")
     for c in ["best_contact", "other_contacts", "distinct_engaged", "ms_bonus", "account_engagement"]:
         accounts[c] = accounts[c].fillna(0)
 
     accounts["broker_both"] = accounts.apply(
-        lambda r: r["account_type"] == "Employer" 
-        and broker_eng_map.get(r["broker_id"], 0) >= 15 
-        and r["account_engagement"] >= 15, 
+        lambda r: r["account_type"] == "Employer"
+        and broker_eng_map.get(r["broker_id"], 0) >= 15
+        and r["account_engagement"] >= 15,
         axis=1
     )
     accounts["broker_bonus"] = np.where(accounts["broker_both"], 15, 0)
@@ -126,7 +126,7 @@ def run_model_b_pipeline(accounts, contacts, emails, webinars, quotes, proposals
 
     competitor_accs = set(contacts.loc[contacts["domain_type"] == "Competitor", "account_id"])
     accounts["disqualified"] = (accounts["account_type"] == "Employer") & ((accounts["lives"] < 50) | (accounts["account_id"].isin(competitor_accs)))
-    accounts["composite_score"] = (0.4 * accounts["fit_score"] + 0.6 * accounts["account_engagement"] + 0.8 * accounts["broker_bonus"]).clip(1, 100)
+    accounts["composite_score"] = (0.4 * accounts["fit_score"] + 0.6 * accounts["account_engagement" ] + 0.8 * accounts["broker_bonus"]).clip(1, 100)
 
     hi_ids = set(emails.loc[emails["link_category"] == "high_intent", "contact_id"])
     hi_accs = set(contacts.loc[contacts["contact_id"].isin(hi_ids), "account_id"])
@@ -146,7 +146,7 @@ def run_model_b_pipeline(accounts, contacts, emails, webinars, quotes, proposals
         if r["account_engagement"] > 0:
             return "Responder"
         return "Disqualified"
-        
+
     accounts["tier"] = accounts.apply(tier_row, axis=1)
 
     def arch_row(r):
@@ -163,22 +163,22 @@ def run_model_b_pipeline(accounts, contacts, emails, webinars, quotes, proposals
         if fh and e < 15: return "Dormant Giant"
         if 5 <= e < 15: return "Fader"
         return "Lurker"
-        
+
     accounts["archetype"] = accounts.apply(arch_row, axis=1)
-    
+
     # Merge Quote / Proposal metrics
     q_summary = quotes.groupby("account_id").agg(quote_count=("quote_id", "count"), quoted_premium=("quoted_premium", "sum")).reset_index()
     p_summary = proposals.groupby("account_id").agg(proposal_count=("proposal_id", "count"), proposed_premium=("proposed_premium", "sum")).reset_index()
-    
+
     accounts = accounts.merge(q_summary, on="account_id", how="left").merge(p_summary, on="account_id", how="left")
     for col in ["quote_count", "quoted_premium", "proposal_count", "proposed_premium"]:
         accounts[col] = accounts[col].fillna(0)
-        
+
     # Metric mapping for UI compatibility
     accounts["engagement_score"] = accounts["account_engagement"]
     accounts["annual_premium_usd"] = accounts["est_premium"]
     accounts["sql_converted"] = np.where(accounts["proposal_count"] > 0, 1, 0)
-    
+
     return accounts
 
 # =============================================================================
@@ -205,7 +205,7 @@ def generate_chart_specs(df: pd.DataFrame) -> list:
     tier_counts = df["tier"].value_counts().reindex(tier_order, fill_value=0)
     tier_sql = df.groupby("tier")["sql_converted"].sum().reindex(tier_order, fill_value=0)
     arch_counts = df["archetype"].value_counts()
-    
+
     return [
         {
             "key": "tier_dist",
@@ -261,24 +261,24 @@ def get_grounded_response(question, history_context=""):
         return "Groq API Key missing. Please provide GROQ_API_KEY in Streamlit secrets or environment.", []
     if not CHUNKS:
         return "No chunk artifacts found. Please verify chunks.json is generated.", []
-        
+
     q_emb = embedder.encode([question], convert_to_numpy=True)[0]
     q_emb = q_emb / (np.linalg.norm(q_emb) + 1e-9)
     similarities = EMBEDDINGS_NORM @ q_emb
     top_indices = np.argsort(similarities)[::-1][:3]
-    
+
     sources = [CHUNKS[idx] for idx in top_indices if similarities[idx] > 0.1]
     context_str = "\n\n".join([f"Source: {s['title']}\n{s['text']}" for s in sources])
-    
+
     client = Groq(api_key=GROQ_API_KEY)
     system_prompt = "You are an advanced B2B RevOps copilot. Use the context and dataset details to answer. Be factual and clear."
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": f"Context:\n{context_str}\n\nQuestion: {question}"}
     ]
-    
+
     try:
-        res = client.chat.completions.create(model="llama-3.1-8b-instant", messages=messages, temperature=0.2, max_tokens=800)
+        res = client.chat.completions.create(model="llama3-8b-8192", messages=messages, temperature=0.2, max_tokens=800)
         return res.choices[0].message.content, sources
     except Exception as e:
         return f"Error generating response: {str(e)}", []
@@ -304,7 +304,7 @@ scored_df = pd.DataFrame()
 if all([f_acc, f_con, f_em, f_web, f_q, f_p]):
     try:
         scored_df = run_model_b_pipeline(
-            pd.read_csv(f_acc), pd.read_csv(f_con), pd.read_csv(f_em), 
+            pd.read_csv(f_acc), pd.read_csv(f_con), pd.read_csv(f_em),
             pd.read_csv(f_web), pd.read_csv(f_q), pd.read_csv(f_p)
         )
         st.success("✅ Custom relational datasets parsed successfully.")
@@ -323,11 +323,11 @@ if not scored_df.empty:
     col2.metric("Average Score", f"{scored_df['composite_score'].mean():.1f}")
     col3.metric("Priority MQLs", f"{int((scored_df['tier']=='Priority MQL').sum()):,}")
     col4.metric("Total Premium Volume", f"${scored_df['est_premium'].sum() / 1e6:.2f}M")
-    
+
     tab_diag, tab_tbl, tab_bot = st.tabs(["📈 Interactive Diagnostics", "📋 Scored Accounts List", "💬 Centralized Chatbot"])
-    
+
     chart_specs = generate_chart_specs(scored_df)
-    
+
     with tab_diag:
         st.subheader("Lead Quality Matrix & Breakdown")
         for spec in chart_specs:
@@ -349,19 +349,19 @@ if not scored_df.empty:
                 st.markdown("*AE Action Plan:*")
                 st.caption(spec["recommendation"])
             st.divider()
-            
+
     with tab_tbl:
         st.dataframe(scored_df[["account_id", "account_name", "account_type", "composite_score", "fit_score", "account_engagement", "tier", "archetype", "est_premium"]], use_container_width=True, hide_index=True)
         st.download_button("⬇️ Export Scored Accounts Dataset", data=scored_df.to_csv(index=False).encode('utf-8'), file_name="scored_accounts.csv", mime="text/csv")
-        
+
     with tab_bot:
         st.subheader("RevOps Grounded AI Assistant")
         st.write("Ask model-specific, factual questions regarding thresholds, tiers, and behavioral signals below.")
-        
+
         # Initialize messages in session state if missing
         if "chat_history" not in st.session_state:
             st.session_state.chat_history = []
-            
+
         # Persistent chatbot area container to prevent interface shifting
         chat_container = st.container(height=380, border=True)
         with chat_container:
@@ -370,11 +370,11 @@ if not scored_df.empty:
             for msg in st.session_state.chat_history:
                 with st.chat_message(msg["role"]):
                     st.markdown(msg["content"])
-                    
-        if user_prompt := st.chat_input("Analyze Priority MQL conditions or dataset metrics..."):
+
+        if user_prompt := st.chat_input("Analyze Priority MQL conditions or dataset metrics... "):
             # Append user message
             st.session_state.chat_history.append({"role": "user", "content": user_prompt})
-            
+
             # Generate response
             ans, refs = get_grounded_response(user_prompt)
             st.session_state.chat_history.append({"role": "assistant", "content": ans})
