@@ -1,0 +1,6 @@
+account_id,account_name,fit_score,engagement_score,broker_bonus,annual_premium_usd,active_signal,multi_threaded,disqualified,days_to_renewal,sql_converted
+ACC-201,Northstar Freight & Logistics,84.0,26.0,5.0,1850000,1,1,0,42,1
+ACC-202,Crestline Manufacturing Co.,78.0,21.0,0.0,1400000,1,0,0,65,0
+ACC-203,Harborview Cold Chain,81.0,8.0,0.0,2200000,0,0,0,110,0
+ACC-204,Redwood Specialty Retail,42.0,16.0,0.0,450000,1,0,0,90,0
+ACC-205,Bayside Staffing Group,28.0,4.0,0.0,250000,0,0,1,180,0
