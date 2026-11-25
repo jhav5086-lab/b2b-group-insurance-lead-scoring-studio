@@ -1,7 +1,5 @@
 import os
 import json
-import seaborn as sns
-import matplotlib.pyplot as plt
 import zipfile
 import numpy as np
 import pandas as pd
@@ -281,7 +279,7 @@ from groq import Groq
 # =============================================================================
 st.set_page_config(
     page_title="B2B Insurance Scoring & RevOps Studio",
-    page_icon="┐",
+    page_icon="| ",
     layout="wide"
 )
 
@@ -304,7 +302,7 @@ if not GROQ_API_KEY:
             pass
 
 if not GROQ_API_KEY:
-    st.warning("☑☑ **Missing API Key:** Set GROQ_API_KEY to enable Chatbot capabilities.")
+    st.warning("Missing API Key: Set GROQ_API_KEY to enable Chatbot capabilities.")
 
 CHUNKS_PATH = "./embeddings/chunks.json"
 EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
@@ -526,25 +524,25 @@ def build_dataset_summary_context(df):
 # =============================================================================
 # STREAMLIT UI LAYOUT
 # =============================================================================
-st.title("┐ RevOps Unified Lead Scoring Studio")
+st.title("RevOps Unified Lead Scoring Studio")
 st.caption("Process complete relational pipeline datasets, track dynamic behaviors, and interact with the grounding bot.")
 
 scored_df = load_local_fallback_data()
 if not scored_df.empty:
-    st.success("☑ Successfully loaded and processed dynamic RevOps pipeline!")
+    st.success("Successfully loaded and processed dynamic RevOps pipeline!")
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Total Accounts", f"{len(scored_df):,}")
-    c2.metric("Avg Composite Score", f"{scored_df[‘composite_score’].mean():.1f}")
-    c3.metric("Priority MQLs", f"{int((scored_df[‘tier’] == ‘Priority MQL’).sum()):,}")
-    c4.metric("Total Annual Premium", f"${scored_df[‘annual_premium_usd’].sum() / 1e6:.2f}M")
+    c2.metric("Avg Composite Score", f"{scored_df['composite_score'].mean():.1f}")
+    c3.metric("Priority MQLs", f"{int((scored_df['tier'] == 'Priority MQL').sum()):,}")
+    c4.metric("Total Annual Premium", f"${scored_df['annual_premium_usd'].sum() / 1e6:.2f}M")
 
-    tab_table, tab_charts, tab_chat = st.tabs(["┒ Scored Accounts Table", "│ Interactive Insights", "┤ RAG Assistant"])
+    tab_table, tab_charts, tab_chat = st.tabs(["Scored Accounts Table", "Interactive Insights", "RAG Assistant"])
 
     with tab_table:
         st.dataframe(scored_df.head(200), use_container_width=True)
         st.download_button(
-            label="↓│ Download Scored Accounts CSV",
+            label="Download Scored Accounts CSV",
             data=scored_df.to_csv(index=False).encode("utf-8"),
             file_name="scored_accounts_output.csv",
             mime="text/csv"
@@ -577,7 +575,7 @@ if not scored_df.empty:
                 st.error("Chatbot is inactive due to missing GROQ_API_KEY.")
             else:
                 retrieved = retrieve(user_q)
-                retrieved_context = "\\n\\n".join([f"[{r[‘title’]}]: {r[‘text’]}" for r in retrieved])
+                retrieved_context = "\\n\\n".join([f"[{r['title']}]: {r['text']}" for r in retrieved])
                 data_context = build_dataset_summary_context(scored_df)
 
                 system_prompt = f"You are an artifact-grounded RevOps bot. Use the active data snapshot: {data_context} and context: {retrieved_context}. Cite your sources using [Chunk Title]. Keep replies succinct (2-4 sentences)."
@@ -600,7 +598,7 @@ if not scored_df.empty:
                 except Exception as ex:
                     st.error(f"Inference Error: {ex}")
 else:
-    st.warning("☑ Waiting for pipeline execution data.")
+    st.warning("Waiting for pipeline execution data.")
 """)
 
-print("‰ Consolidated pipeline completed! Model outputs, embeddings, and app.py are fully assembled.")
+print("Consolidated pipeline completed! Model outputs, embeddings, and app.py are fully assembled.")
