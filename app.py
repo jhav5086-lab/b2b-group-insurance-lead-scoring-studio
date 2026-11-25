@@ -14,30 +14,50 @@ from sentence_transformers import SentenceTransformer
 from groq import Groq
 
 # =============================================================================
-# STREAMLIT CONFIGURATION
+# CONFIG & SAFETY CHECKS WITH COLAB USERDATA FALLBACK
 # =============================================================================
 st.set_page_config(
-    page_title="B2B Insurance Scoring & RevOps Studio",
+    page_title="RevOps Lead Scoring & RAG Studio",
     page_icon="🎯",
-    layout="wide"
+    layout="wide",
 )
 
-# Safely resolve secrets
-GROQ_API_KEY = st.secrets.get("GROQ_API_KEY") if "GROQ_API_KEY" in st.secrets else os.environ.get("GROQ_API_KEY")
-if not GROQ_API_KEY:
-    st.warning("⚠️ **Missing API Key:** Set GROQ_API_KEY to ask questions in the RAG Chatbot.")
+# Safely resolve secrets without throwing StreamlitSecretNotFoundError
+GROQ_API_KEY = ""
+try:
+    if "GROQ_API_KEY" in st.secrets:
+        GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
+except Exception:
+    pass
 
-# Fallback paths for RAG chunks
+if not GROQ_API_KEY:
+    # Fallback to Colab userdata or Environment variable
+    try:
+        from google.colab import userdata
+        GROQ_API_KEY = userdata.get("GROQ_API_KEY")
+    except Exception:
+        GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
+
+if not GROQ_API_KEY:
+    st.warning("⚠️ **Missing API Key:** Set GROQ_API_KEY in Streamlit Secrets, environment variables, or Google Colab secrets to enable Chat.")
+
 CHUNKS_PATH = "./embeddings/chunks.json"
 EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 TOP_K = 5
+MIN_RAW_SIM = 0.10
+HISTORY_TURNS = 2
+HISTORY_MSG_CHARS = 600
+MAX_TOKENS_DEFAULT = 1200
+MAX_TOKENS_VISUAL = 2500
+
+REFUSAL = "The provided model artifacts do not contain this information."
+QUOTE_CHARS = "\"'\u201c\u201d\u2018\u2019"
 
 # =============================================================================
 # UNIFIED MODEL B PIPELINE RUNNER
 # =============================================================================
 def run_model_b_pipeline(accounts, contacts, emails, webinars, quotes, proposals) -> pd.DataFrame:
     EVAL = pd.Timestamp("2024-09-15")
-
     accounts = accounts.copy()
     contacts = contacts.copy()
     emails = emails.copy()
@@ -167,7 +187,6 @@ def run_model_b_pipeline(accounts, contacts, emails, webinars, quotes, proposals
 
     accounts["archetype"] = accounts.apply(arch_row, axis=1)
 
-    # Merge Quote / Proposal metrics
     q_summary = quotes.groupby("account_id").agg(quote_count=("quote_id", "count"), quoted_premium=("quoted_premium", "sum")).reset_index()
     p_summary = proposals.groupby("account_id").agg(proposal_count=("proposal_id", "count"), proposed_premium=("proposed_premium", "sum")).reset_index()
 
@@ -175,10 +194,9 @@ def run_model_b_pipeline(accounts, contacts, emails, webinars, quotes, proposals
     for col in ["quote_count", "quoted_premium", "proposal_count", "proposed_premium"]:
         accounts[col] = accounts[col].fillna(0)
 
-    # Metric mapping for UI compatibility
     accounts["engagement_score"] = accounts["account_engagement"]
     accounts["annual_premium_usd"] = accounts["est_premium"]
-    accounts["sql_converted"] = np.where(accounts["proposal_count" ] > 0, 1, 0)
+    accounts["sql_converted"] = np.where(accounts["proposal_count"] > 0, 1, 0)
 
     return accounts
 
@@ -187,7 +205,7 @@ def run_model_b_pipeline(accounts, contacts, emails, webinars, quotes, proposals
 # =============================================================================
 @st.cache_data
 def load_local_fallback_data():
-    # Fixed directory target location from '/content/data/' instead of local relative subdirectory
+    # FIXED: Pointing to absolute pipeline output directory '/content/data/' instead of relative './data/'
     if os.path.exists("/content/data/accounts.csv"):
         accs = pd.read_csv("/content/data/accounts.csv")
         cont = pd.read_csv("/content/data/contacts.csv")
@@ -272,7 +290,7 @@ if not scored_df.empty:
     with tab_table:
         st.dataframe(scored_df.head(200), use_container_width=True)
         st.download_button(
-            label="⬇️ Download Scored Accounts CSV",
+            label="⬇&_FE_95; Download Scored Accounts CSV",
             data=scored_df.to_csv(index=False).encode("utf-8"),
             file_name="scored_accounts_output.csv",
             mime="text/csv"
