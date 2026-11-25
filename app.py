@@ -1,126 +1,95 @@
-                with st.chat_message(message["role"]):
-                    st.markdown(message["content"])
+import json
+import os
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
-            if not GROQ_API_KEY:
-                st.warning(
-                    "Chat is not enabled. Add GROQ_API_KEY to Streamlit Secrets "
-                    "to activate the RAG assistant."
-                )
-            elif Groq is None or SentenceTransformer is None:
-                st.warning(
-                    "Chat dependencies are unavailable. Install groq and "
-                    "sentence-transformers from requirements.txt."
-                )
-            else:
-                user_question = st.chat_input(
-                    "Ask about MQL rules, fit score, engagement, tiers, or this dataset..."
-                )
-                if user_question:
-                    st.session_state.messages.append({
-                        "role": "user",
-                        "content": user_question,
-                    })
-                    with st.chat_message("user"):
-                        st.markdown(user_question)
+import numpy as np
+import pandas as pd
+import streamlit as st
 
-                    try:
-                        backend = load_rag_backend()
-                        retrieved = retrieve(user_question, backend)
-                        retrieved_context = "\n\n".join(
-                            f"[{item['title']}] {item['text']}"
-                            for item in retrieved
-                        )
-                        dataset_context = build_dataset_summary_context(scored_df)
+# Optional dependencies: the scoring application still works if the RAG
+# dependencies are unavailable. Install them through requirements.txt to enable chat.
+try:
+    from sentence_transformers import SentenceTransformer
+except Exception:
+    SentenceTransformer = None
 
-                        if not retrieved_context:
-                            retrieved_context = REFUSAL
+try:
+    from groq import Groq
+except Exception:
+    Groq = None
 
-                        system_prompt = f"""
-You are an artifact-grounded RevOps assistant for a deterministic B2B group
-insurance lead-prioritization framework.
 
-Use ONLY the supplied knowledge-base context for claims about the documented
-scoring methodology. Use the active dataset metrics for questions about the
-currently selected dataset. Do not invent scoring rules, thresholds, data
-fields, customer facts, or results.
-
-The framework is deterministic and heuristic, not a predictive conversion model.
-Do not describe it as an ML prediction model.
-
-If the supplied context does not support an answer, say exactly:
-"{REFUSAL}"
-
-Cite relevant knowledge chunks using their title in square brackets, for example
-[Model B Overview]. Keep answers concise but useful.
-
-ACTIVE DATASET:
-{dataset_context}
-
-RETRIEVED KNOWLEDGE-BASE CONTEXT:
-{retrieved_context}
-""".strip()
-
-                        with st.chat_message("assistant"):
-                            with st.spinner("Retrieving evidence and generating answer..."):
-                                response = backend[3].chat.completions.create(
-                                    model="llama-3.1-8b-instant",
-                                    messages=[
-                                        {"role": "system", "content": system_prompt},
-                                        {"role": "user", "content": user_question},
-                                    ],
-                                    temperature=0.2,
-                                    max_tokens=MAX_TOKENS_DEFAULT,
-                                )
-                                answer = response.choices[0].message.content or REFUSAL
-                            st.markdown(answer)
-                            with st.expander("View retrieved grounding context"):
-                                if retrieved:
-                                    for item in retrieved:
-                                        st.markdown(
-                                            f"**{item['title']}** "
-                                            f"(similarity: {item['raw_score']:.3f})"
-                                        )
-                                        st.write(item["text"])
-                                else:
-                                    st.write("No relevant knowledge chunks passed the similarity threshold.")
-
-                        st.session_state.messages.append({
-                            "role": "assistant",
-                            "content": answer,
-                        })
-
-                    except Exception as exc:
-                        st.error(f"RAG assistant error: {exc}")
-
-        with tab_rules:
-            st.subheader("Model B scoring configuration")
-            st.markdown(
-                """
-**Important:** Model B is a deterministic, heuristic prioritization framework.
-It is not designed to predict whether an account will convert.
-
-- Email events receive category-based points and time decay.
-- Webinar actions contribute engagement points.
-- Contact engagement is aggregated to account engagement.
-- Fit score uses renewal proximity, estimated premium, industry fit, carrier, and broker relationship.
-- Composite score uses the configured formula: `0.4 × fit_score + 0.6 × account_engagement + 0.8 × broker_bonus`.
-- Qualification tiers and archetypes are assigned through explicit business rules.
-- Proposal presence is used for the `sql_converted` output flag in this implementation.
-                """
-            )
-            st.caption(
-                "The evaluation date is fixed in this version at "
-                f"{EVALUATION_DATE.strftime('%Y-%m-%d')}. Email decay and renewal "
-                "urgency are calculated relative to that date."
-            )
-
-else:
-    st.warning(
-        "No scored dataset is currently available. Select the default dataset "
-        "after adding the six repository CSV files, or choose 'Upload my own data'."
-    )
-
-st.divider()
-st.caption(
-    "RevOps Lead Scoring Studio | Deterministic Model B scoring + knowledge-grounded RAG"
+# =============================================================================
+# APP CONFIGURATION
+# =============================================================================
+st.set_page_config(
+    page_title="RevOps Lead Scoring & RAG Studio",
+    page_icon="🎯",
+    layout="wide",
 )
+
+APP_DIR = Path(__file__).resolve().parent
+DATA_DIR_CANDIDATES = [APP_DIR / "data", APP_DIR]
+CHUNKS_PATH = APP_DIR / "embeddings" / "chunks.json"
+
+EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+TOP_K = 5
+MIN_RAW_SIM = 0.10
+MAX_TOKENS_DEFAULT = 1200
+
+# Keep this evaluation date aligned with the original Model B implementation.
+# Change it deliberately when you want to score against a different snapshot date.
+EVALUATION_DATE = pd.Timestamp("2024-09-15")
+
+DATA_FILES = {
+    "accounts": "accounts.csv",
+    "contacts": "contacts.csv",
+    "emails": "email_events.csv",
+    "webinars": "webinar_events.csv",
+    "quotes": "quotes.csv",
+    "proposals": "proposals.csv",
+}
+
+REQUIRED_COLUMNS = {
+    "accounts": {
+        "account_id", "account_name", "account_type", "industry", "industry_fit",
+        "lives", "est_premium", "carrier", "broker_id", "renewal_date",
+    },
+    "contacts": {
+        "contact_id", "account_id", "email", "first_name", "last_name",
+        "persona", "email_status", "domain_type",
+    },
+    "emails": {"event_id", "contact_id", "link_category", "event_date"},
+    "webinars": {
+        "webinar_id", "contact_id", "attended", "minutes", "polls",
+        "questions", "downloaded", "live",
+    },
+    "quotes": {
+        "quote_id", "account_id", "product_code", "quoted_premium",
+        "quote_date", "status",
+    },
+    "proposals": {
+        "proposal_id", "account_id", "proposal_date", "proposed_premium",
+    },
+}
+
+REFUSAL = "The provided model artifacts do not contain this information."
+
+
+# =============================================================================
+# API KEY
+# =============================================================================
+def get_groq_api_key() -> str:
+    """Read Groq key from Streamlit secrets or environment variables."""
+    try:
+        value = st.secrets.get("GROQ_API_KEY", "")
+        if value:
+            return str(value).strip()
+    except Exception:
+        pass
+    return os.environ.get("GROQ_API_KEY", "").strip()
+
+
+GROQ_API_KEY = get_groq_api_key()
+
