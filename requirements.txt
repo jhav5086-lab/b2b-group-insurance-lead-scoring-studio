@@ -1,0 +1,8 @@
+streamlit
+altair
+matplotlib
+fpdf2
+pandas
+numpy
+sentence-transformers
+groq
