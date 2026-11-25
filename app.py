@@ -14,50 +14,30 @@ from sentence_transformers import SentenceTransformer
 from groq import Groq
 
 # =============================================================================
-# CONFIG & SAFETY CHECKS WITH COLAB USERDATA FALLBACK
+# STREAMLIT CONFIGURATION
 # =============================================================================
 st.set_page_config(
-    page_title="RevOps Lead Scoring & RAG Studio",
+    page_title="B2B Insurance Scoring & RevOps Studio",
     page_icon="🎯",
-    layout="wide",
+    layout="wide"
 )
 
-# Safely resolve secrets without throwing StreamlitSecretNotFoundError
-GROQ_API_KEY = ""
-try:
-    if "GROQ_API_KEY" in st.secrets:
-        GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
-except Exception:
-    pass
-
+# Safely resolve secrets
+GROQ_API_KEY = st.secrets.get("GROQ_API_KEY") if "GROQ_API_KEY" in st.secrets else os.environ.get("GROQ_API_KEY")
 if not GROQ_API_KEY:
-    # Fallback to Colab userdata or Environment variable
-    try:
-        from google.colab import userdata
-        GROQ_API_KEY = userdata.get("GROQ_API_KEY")
-    except Exception:
-        GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
+    st.warning("⚠️ **Missing API Key:** Set GROQ_API_KEY to ask questions in the RAG Chatbot.")
 
-if not GROQ_API_KEY:
-    st.warning("⚠️ **Missing API Key:** Set GROQ_API_KEY in Streamlit Secrets, environment variables, or Google Colab secrets to enable Chat.")
-
+# Fallback paths for RAG chunks
 CHUNKS_PATH = "./embeddings/chunks.json"
 EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 TOP_K = 5
-MIN_RAW_SIM = 0.10
-HISTORY_TURNS = 2
-HISTORY_MSG_CHARS = 600
-MAX_TOKENS_DEFAULT = 1200
-MAX_TOKENS_VISUAL = 2500
-
-REFUSAL = "The provided model artifacts do not contain this information."
-QUOTE_CHARS = "\"'\u201c\u201d\u2018\u2019"
 
 # =============================================================================
 # UNIFIED MODEL B PIPELINE RUNNER
 # =============================================================================
 def run_model_b_pipeline(accounts, contacts, emails, webinars, quotes, proposals) -> pd.DataFrame:
     EVAL = pd.Timestamp("2024-09-15")
+
     accounts = accounts.copy()
     contacts = contacts.copy()
     emails = emails.copy()
@@ -187,6 +167,7 @@ def run_model_b_pipeline(accounts, contacts, emails, webinars, quotes, proposals
 
     accounts["archetype"] = accounts.apply(arch_row, axis=1)
 
+    # Merge Quote / Proposal metrics
     q_summary = quotes.groupby("account_id").agg(quote_count=("quote_id", "count"), quoted_premium=("quoted_premium", "sum")).reset_index()
     p_summary = proposals.groupby("account_id").agg(proposal_count=("proposal_id", "count"), proposed_premium=("proposed_premium", "sum")).reset_index()
 
@@ -194,9 +175,10 @@ def run_model_b_pipeline(accounts, contacts, emails, webinars, quotes, proposals
     for col in ["quote_count", "quoted_premium", "proposal_count", "proposed_premium"]:
         accounts[col] = accounts[col].fillna(0)
 
+    # Metric mapping for UI compatibility
     accounts["engagement_score"] = accounts["account_engagement"]
     accounts["annual_premium_usd"] = accounts["est_premium"]
-    accounts["sql_converted"] = np.where(accounts["proposal_count"] > 0, 1, 0)
+    accounts["sql_converted"] = np.where(accounts["proposal_count" ] > 0, 1, 0)
 
     return accounts
 
@@ -205,13 +187,14 @@ def run_model_b_pipeline(accounts, contacts, emails, webinars, quotes, proposals
 # =============================================================================
 @st.cache_data
 def load_local_fallback_data():
-    if os.path.exists("./data/accounts.csv"):
-        accs = pd.read_csv("./data/accounts.csv")
-        cont = pd.read_csv("./data/contacts.csv")
-        em = pd.read_csv("./data/email_events.csv")
-        web = pd.read_csv("./data/webinar_events.csv")
-        quo = pd.read_csv("./data/quotes.csv")
-        prop = pd.read_csv("./data/proposals.csv")
+    # Fixed directory target location from '/content/data/' instead of local relative subdirectory
+    if os.path.exists("/content/data/accounts.csv"):
+        accs = pd.read_csv("/content/data/accounts.csv")
+        cont = pd.read_csv("/content/data/contacts.csv")
+        em = pd.read_csv("/content/data/email_events.csv")
+        web = pd.read_csv("/content/data/webinar_events.csv")
+        quo = pd.read_csv("/content/data/quotes.csv")
+        prop = pd.read_csv("/content/data/proposals.csv")
         return run_model_b_pipeline(accs, cont, em, web, quo, prop)
     return pd.DataFrame()
 
@@ -227,7 +210,7 @@ def load_rag_backend():
             chunks = json.load(f)
     else:
         chunks = [{"type": "fallback", "title": "General", "text": "No specialized lead scoring documents found locally."}]
-    
+
     texts = [c["text"] for c in chunks]
     embeddings = embedder.encode(texts, convert_to_numpy=True)
     client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
@@ -244,13 +227,13 @@ except Exception as e:
 # RAG UTILS
 # =============================================================================
 def retrieve(query, top_k=TOP_K):
-    if not EMBEDDINGS_NORM is not None:
+    if EMBEDDINGS_NORM is None:
         return []
     q_emb = embedder.encode([query], convert_to_numpy=True)[0]
     q_emb = q_emb / (np.linalg.norm(q_emb) + 1e-9)
     raw_sims = EMBEDDINGS_NORM @ q_emb
     top_idx = list(np.argsort(raw_sims)[::-1][:top_k])
-    
+
     return [
         {
             "title": CHUNKS[i]["title"],
@@ -277,15 +260,15 @@ st.caption("Process complete relational pipeline datasets, track dynamic behavio
 scored_df = load_local_fallback_data()
 if not scored_df.empty:
     st.success("✅ Successfully loaded and processed dynamic RevOps pipeline!")
-    
+
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Total Accounts", f"{len(scored_df):,}")
     c2.metric("Avg Composite Score", f"{scored_df['composite_score'].mean():.1f}")
     c3.metric("Priority MQLs", f"{int((scored_df['tier'] == 'Priority MQL').sum()):,}")
     c4.metric("Total Annual Premium", f"${scored_df['annual_premium_usd'].sum() / 1e6:.2f}M")
-    
+
     tab_table, tab_charts, tab_chat = st.tabs(["📋 Scored Accounts Table", "📊 Interactive Insights", "💬 RAG Assistant"])
-    
+
     with tab_table:
         st.dataframe(scored_df.head(200), use_container_width=True)
         st.download_button(
@@ -308,7 +291,7 @@ if not scored_df.empty:
     with tab_chat:
         if "messages" not in st.session_state:
             st.session_state.messages = []
-        
+
         for msg in st.session_state.messages:
             with st.chat_message(msg["role"]):
                 st.markdown(msg["content"])
@@ -317,16 +300,16 @@ if not scored_df.empty:
             with st.chat_message("user"):
                 st.markdown(user_q)
             st.session_state.messages.append({"role": "user", "content": user_q})
-            
+
             if not groq_client:
                 st.error("Chatbot is inactive due to missing GROQ_API_KEY.")
             else:
                 retrieved = retrieve(user_q)
                 retrieved_context = "\n\n".join([f"[{r['title']}]: {r['text']}" for r in retrieved])
                 data_context = build_dataset_summary_context(scored_df)
-                
+
                 system_prompt = f"You are an artifact-grounded RevOps bot. Use the active data snapshot: {data_context} and context: {retrieved_context}. Cite your sources using [Chunk Title]. Keep replies succinct (2-4 sentences)."
-                
+
                 try:
                     response = groq_client.chat.completions.create(
                         model="llama-3.1-8b-instant",
