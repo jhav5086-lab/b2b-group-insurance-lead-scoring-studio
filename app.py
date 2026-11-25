@@ -1,4 +1,3 @@
-%%writefile /content/app.py
 import json
 import os
 import re
