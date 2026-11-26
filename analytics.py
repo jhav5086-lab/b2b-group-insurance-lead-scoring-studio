@@ -8,25 +8,40 @@ def _chart_to_png(chart: alt.Chart, scale: int = 2) -> bytes:
     return vlc.vegalite_to_png(vl_spec=chart.to_json(), scale=scale)
 
 
+def _employers(df: pd.DataFrame) -> pd.DataFrame:
+    """Employer accounts only. Every metric in the report must use this same filter."""
+    if df is not None and "account_type" in df.columns:
+        return df[df["account_type"] == "Employer"]
+    return df if df is not None else pd.DataFrame()
+
+
+def _mean(df: pd.DataFrame, col: str) -> float:
+    return float(df[col].mean()) if len(df) and col in df.columns else 0.0
+
+
+def _count_tier(df: pd.DataFrame, tier: str) -> int:
+    return int((df["tier"] == tier).sum()) if len(df) and "tier" in df.columns else 0
+
+
 def build_decay_comparison(scored_df: pd.DataFrame, baseline_df: pd.DataFrame):
     """Build side-by-side before/after decay metrics, deltas, and difference-driven recommendations."""
-    emp_after = scored_df[scored_df["account_type"] == "Employer"] if "account_type" in scored_df.columns else scored_df
-    emp_before = baseline_df[baseline_df["account_type"] == "Employer"] if "account_type" in baseline_df.columns else baseline_df
+    emp_after = _employers(scored_df)
+    emp_before = _employers(baseline_df)
 
-    avg_eng_before = float(emp_before["account_engagement"].mean()) if len(emp_before) else 0.0
-    avg_eng_after = float(emp_after["account_engagement"].mean()) if len(emp_after) else 0.0
+    avg_eng_before = _mean(emp_before, "account_engagement")
+    avg_eng_after = _mean(emp_after, "account_engagement")
 
-    avg_score_before = float(emp_before["total_score"].mean()) if len(emp_before) else 0.0
-    avg_score_after = float(emp_after["total_score"].mean()) if len(emp_after) else 0.0
+    avg_score_before = _mean(emp_before, "total_score")
+    avg_score_after = _mean(emp_after, "total_score")
 
-    prio_before = int((emp_before["tier"] == "Priority MQL").sum()) if len(emp_before) else 0
-    prio_after = int((emp_after["tier"] == "Priority MQL").sum()) if len(emp_after) else 0
+    prio_before = _count_tier(emp_before, "Priority MQL")
+    prio_after = _count_tier(emp_after, "Priority MQL")
 
-    mql_before = int((emp_before["tier"] == "MQL").sum()) if len(emp_before) else 0
-    mql_after = int((emp_after["tier"] == "MQL").sum()) if len(emp_after) else 0
+    mql_before = _count_tier(emp_before, "MQL")
+    mql_after = _count_tier(emp_after, "MQL")
 
-    resp_before = int((emp_before["tier"] == "Responder").sum()) if len(emp_before) else 0
-    resp_after = int((emp_after["tier"] == "Responder").sum()) if len(emp_after) else 0
+    resp_before = _count_tier(emp_before, "Responder")
+    resp_after = _count_tier(emp_after, "Responder")
 
     comp_df = pd.DataFrame([
         {
@@ -68,24 +83,24 @@ def build_decay_comparison(scored_df: pd.DataFrame, baseline_df: pd.DataFrame):
     recommendations = []
     if prio_diff < 0:
         recommendations.append(
-            f"Priority MQL count dropped by {abs(prio_diff)} accounts after decay: focus immediate outbound reps on the {prio_after} accounts that remain Priority MQLs due to recent engagement."
+            f"Priority MQL count dropped by {abs(prio_diff):,} accounts after decay: focus immediate outbound reps on the {prio_after:,} accounts that remain Priority MQLs due to recent engagement."
         )
     elif prio_diff > 0:
         recommendations.append(
-            f"Priority MQL count increased by {prio_diff} accounts after decay: verify recent activity timestamps and route newly qualified accounts quickly."
+            f"Priority MQL count increased by {prio_diff:,} accounts after decay: verify recent activity timestamps and route newly qualified accounts quickly."
         )
     else:
         recommendations.append(
-            f"Priority MQL count is unchanged ({prio_after} accounts) between before and after decay: high-intent accounts hold strong recent signals or strong fit/quote/proposal anchors."
+            f"Priority MQL count is unchanged ({prio_after:,} accounts) between before and after decay: high-intent accounts hold strong recent signals or strong fit/quote/proposal anchors."
         )
 
     if mql_diff < 0:
         recommendations.append(
-            f"MQL count changed by {mql_diff} ({mql_before} -> {mql_after}): move accounts that lost MQL status from direct sales queues into re-engagement email or webinar nurture."
+            f"MQL count changed by {mql_diff:+,} ({mql_before:,} -> {mql_after:,}): move accounts that lost MQL status from direct sales queues into re-engagement email or webinar nurture."
         )
     else:
         recommendations.append(
-            f"MQL count changed by {mql_diff:+d} ({mql_before} -> {mql_after}): review accounts near the 50-point MQL threshold for targeted multi-contact outreach."
+            f"MQL count changed by {mql_diff:+,} ({mql_before:,} -> {mql_after:,}): review accounts near the 50-point MQL threshold for targeted multi-contact outreach."
         )
 
     if eng_diff < 0:
@@ -100,7 +115,7 @@ def build_decay_comparison(scored_df: pd.DataFrame, baseline_df: pd.DataFrame):
     summary = (
         f"Before vs. After Decay: Avg Engagement {avg_eng_before:.2f} -> {avg_eng_after:.2f} ({eng_diff:+.2f}), "
         f"Avg Score {avg_score_before:.2f} -> {avg_score_after:.2f} ({avg_score_after - avg_score_before:+.2f}), "
-        f"Priority MQLs {prio_before} -> {prio_after} ({prio_diff:+d})."
+        f"Priority MQLs {prio_before:,} -> {prio_after:,} ({prio_diff:+,})."
     )
 
     return comp_df, summary, recommendations
@@ -116,13 +131,21 @@ def build_report(scored_df, no_decay_df, eval_date, apply_decay, decay_hl):
         "decay_summary": "",
         "decay_recommendations": [],
     }
-    emp = scored_df[scored_df["account_type"] == "Employer"] if "account_type" in scored_df.columns else scored_df
+
+    # Guard: nothing to report (e.g. run_pipeline returned an empty frame with no columns)
+    if scored_df is None or scored_df.empty or "tier" not in scored_df.columns:
+        report["kpis"] = {"employers": 0, "priority": 0, "mql": 0, "avg_score": 0.0}
+        report["warnings"].append("No scored accounts available. Check that Accounts, Contacts and Email Events were loaded.")
+        return report
+
+    emp = _employers(scored_df)
+    emp_before = _employers(no_decay_df)
 
     report["kpis"] = {
         "employers": len(emp),
-        "priority": int((emp["tier"] == "Priority MQL").sum()) if len(emp) else 0,
-        "mql": int((emp["tier"] == "MQL").sum()) if len(emp) else 0,
-        "avg_score": float(emp["total_score"].mean()) if len(emp) else 0.0,
+        "priority": _count_tier(emp, "Priority MQL"),
+        "mql": _count_tier(emp, "MQL"),
+        "avg_score": _mean(emp, "total_score"),
     }
 
     # 1. Tier Chart
@@ -144,7 +167,7 @@ def build_report(scored_df, no_decay_df, eval_date, apply_decay, decay_hl):
 
     if not t_counts.empty:
         top_tier = t_counts.iloc[0]
-        t_insight = f"The {top_tier['Tier']} segment is the largest, containing {top_tier['Count']} accounts."
+        t_insight = f"The {top_tier['Tier']} segment is the largest, containing {int(top_tier['Count']):,} accounts."
         t_action = f"Direct sales and marketing execution toward the {top_tier['Tier']} segment based on account volume."
     else:
         t_insight = "No employer tier data available."
@@ -177,7 +200,7 @@ def build_report(scored_df, no_decay_df, eval_date, apply_decay, decay_hl):
 
     if not a_counts.empty:
         top_arch = a_counts.iloc[0]
-        a_insight = f"The most common archetype is {top_arch['Archetype']} with {top_arch['Count']} accounts."
+        a_insight = f"The most common archetype is {top_arch['Archetype']} with {int(top_arch['Count']):,} accounts."
         a_action = f"Tailor outreach messaging to address the {top_arch['Archetype']} segment."
     else:
         a_insight = "No employer archetype data available."
@@ -193,10 +216,11 @@ def build_report(scored_df, no_decay_df, eval_date, apply_decay, decay_hl):
     })
 
     # 3. Decay Simulation Chart (Comparison)
-    before_eng = float(no_decay_df["account_engagement"].mean()) if len(no_decay_df) else 0.0
-    after_eng = float(scored_df["account_engagement"].mean()) if len(scored_df) else 0.0
-    before_prio = int((no_decay_df["tier"] == "Priority MQL").sum()) if len(no_decay_df) else 0
-    after_prio = int((scored_df["tier"] == "Priority MQL").sum()) if len(scored_df) else 0
+    # FIX: both sides now use Employer accounts only, matching build_decay_comparison and the KPIs.
+    before_eng = _mean(emp_before, "account_engagement")
+    after_eng = _mean(emp, "account_engagement")
+    before_prio = _count_tier(emp_before, "Priority MQL")
+    after_prio = _count_tier(emp, "Priority MQL")
 
     comp = pd.DataFrame({
         "Metric": ["Avg Engagement", "Priority MQLs"],
@@ -218,11 +242,11 @@ def build_report(scored_df, no_decay_df, eval_date, apply_decay, decay_hl):
     png3 = _chart_to_png(c3)
 
     if not apply_decay or decay_hl == 0:
-        sim_sentence = f"Decay is 0 / off, so average engagement remains {after_eng:.1f} and Priority MQLs remain {after_prio}."
+        sim_sentence = f"Decay is 0 / off, so average engagement remains {after_eng:.1f} and Priority MQLs remain {after_prio:,}."
     else:
         sim_sentence = (
             f"Applying a {decay_hl}-day half-life decay changes average engagement from {before_eng:.1f} to {after_eng:.1f} "
-            f"and Priority MQLs from {before_prio} to {after_prio}."
+            f"and Priority MQLs from {before_prio:,} to {after_prio:,}."
         )
 
     report["simulation"] = comp
@@ -241,8 +265,12 @@ def build_report(scored_df, no_decay_df, eval_date, apply_decay, decay_hl):
     report["decay_summary"] = summary
     report["decay_recommendations"] = recs
 
-    # Top 10
-    if len(emp) and "tier" in emp.columns:
-        report["top10"] = emp[emp["tier"] == "Priority MQL"].sort_values("total_score", ascending=False).head(10)
+    # Top 10: highest score first, ties broken by estimated premium (as the PDF states)
+    if len(emp):
+        report["top10"] = (
+            emp[emp["tier"] == "Priority MQL"]
+            .sort_values(["total_score", "est_premium"], ascending=[False, False])
+            .head(10)
+        )
 
     return report
