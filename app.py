@@ -21,7 +21,7 @@ if not GROQ_API_KEY:
     st.stop()
 
 client = Groq(api_key=GROQ_API_KEY)
-LLM_MODEL = "llama-3.1-8b-instant"
+LLM_MODEL = st.secrets.get("GROQ_MODEL", "openai/gpt-oss-120b")
 
 REQUIRED_SCHEMAS = {
     "Accounts": ["account_id", "account_type"],
@@ -49,7 +49,6 @@ def validate_and_normalize_uploads(acc_df: pd.DataFrame, con_df: pd.DataFrame, e
     con = con_df.copy()
     em = em_df.copy()
 
-    # String IDs and categorical text columns
     for col in ["account_id", "account_type", "industry_fit", "carrier", "broker_id"]:
         if col in acc.columns:
             acc[col] = acc[col].fillna("").astype(str).str.strip()
@@ -62,12 +61,10 @@ def validate_and_normalize_uploads(acc_df: pd.DataFrame, con_df: pd.DataFrame, e
         if col in em.columns:
             em[col] = em[col].fillna("").astype(str).str.strip()
 
-    # Numeric columns
     for col in ["lives", "est_premium"]:
         if col in acc.columns:
             acc[col] = pd.to_numeric(acc[col], errors="coerce").fillna(0)
 
-    # Date columns
     if "renewal_date" in acc.columns:
         acc["renewal_date"] = pd.to_datetime(acc["renewal_date"], errors="coerce")
 
@@ -185,6 +182,7 @@ with st.sidebar:
 # =============================================================================
 # 3. LOAD DATA & RUN PIPELINE
 # =============================================================================
+schema_errors = []
 if upload_acc and upload_con and upload_em:
     raw_acc = pd.read_csv(upload_acc)
     raw_con = pd.read_csv(upload_con)
