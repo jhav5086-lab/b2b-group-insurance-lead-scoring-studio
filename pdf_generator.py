@@ -1,5 +1,5 @@
 """Multi-page PDF for a VP of Sales: cover, one page per chart (image + how to read + insight + action),
-decay simulation, top priority accounts, scoring rules. Built with reportlab and in-memory images only."""
+decay comparison + recommendations, top priority accounts, scoring rules. Built with reportlab and in-memory images only."""
 import io
 from datetime import datetime
 from xml.sax.saxutils import escape
@@ -80,16 +80,16 @@ def _styles():
             fontSize=11,
             leading=14,
             textColor=ACCENT,
-            spaceBefore=8,
+            spaceBefore=7,
             spaceAfter=2,
         ),
-        "body": ParagraphStyle("b", parent=base["Normal"], fontSize=10.5, leading=15, textColor=INK),
+        "body": ParagraphStyle("b", parent=base["Normal"], fontSize=10.5, leading=14.5, textColor=INK),
         "small": ParagraphStyle("sm", parent=base["Normal"], fontSize=8.5, leading=11, textColor=SLATE),
         "bullet": ParagraphStyle(
             "bu",
             parent=base["Normal"],
             fontSize=10.5,
-            leading=15,
+            leading=14.5,
             leftIndent=12,
             bulletIndent=0,
             textColor=INK,
@@ -97,9 +97,16 @@ def _styles():
     }
 
 
-def _img(png, width):
+def _img(png, max_width, max_height=220):
+    """Scale image proportionally so neither width nor height overflows the page frame."""
     w, h = PILImage.open(io.BytesIO(png)).size
-    return Image(io.BytesIO(png), width=width, height=width * h / w)
+    if w <= 0 or h <= 0:
+        return Image(io.BytesIO(png), width=max_width, height=max_height)
+    scale = min(max_width / float(w), max_height / float(h), 1.0)
+    # Also allow scaling up to fit max_width as long as height stays within max_height
+    if (w * scale) < max_width and (h * (max_width / float(w))) <= max_height:
+        scale = max_width / float(w)
+    return Image(io.BytesIO(png), width=w * scale, height=h * scale)
 
 
 def _table(rows, col_widths, header=True, align_right_from=1):
@@ -135,6 +142,15 @@ def _fmt(v):
     return str(v)
 
 
+def _decay_status_text(meta) -> str:
+    if not meta.get("decay"):
+        return "email decay off"
+    hl = int(meta.get("half_life", 45))
+    if hl == 0:
+        return "email decay 0 (no decay applied)"
+    return f"email decay on, {hl}-day half-life"
+
+
 def build_pdf(report, meta, ai_texts=None) -> bytes:
     """report = analytics.build_report output. ai_texts = optional {chart_key: {'insight':..., 'action':...}}."""
     ai_texts = ai_texts or {}
@@ -164,6 +180,7 @@ def build_pdf(report, meta, ai_texts=None) -> bytes:
         [PageTemplate(id="p", frames=[Frame(doc.leftMargin, doc.bottomMargin, doc.width, doc.height, id="f")], onPage=footer)]
     )
     W = doc.width
+    max_img_h = min(225, doc.height * 0.34)
     story = []
 
     # ---- cover
@@ -171,17 +188,14 @@ def build_pdf(report, meta, ai_texts=None) -> bytes:
     story += [
         Paragraph("Lead Scoring Report", st_["title"]),
         Paragraph(
-            safe(
-                f"{meta['label']}  |  evaluation date {pd.Timestamp(meta['eval_date']).date()}  |  "
-                f"email decay {'on, %d-day half-life' % meta['half_life'] if meta['decay'] else 'off'}"
-            ),
+            safe(f"{meta['label']}  |  evaluation date {pd.Timestamp(meta['eval_date']).date()}  |  {_decay_status_text(meta)}"),
             st_["sub"],
         ),
         Spacer(1, 8 * mm),
     ]
     kp = [
-        ["Employer accounts", f"{k['employers']:,}", "Priority MQLs", f"{k['priority']:,}"],
-        ["MQLs", f"{k['mql']:,}", "Average score", f"{k['avg_score']:.1f}"],
+        ["Employer accounts", f"{k.get('employers', 0):,}", "Priority MQLs", f"{k.get('priority', 0):,}"],
+        ["MQLs", f"{k.get('mql', 0):,}", "Average score", f"{k.get('avg_score', 0.0):.1f}"],
     ]
     if "sqls" in k:
         kp.append(["SQLs", f"{k['sqls']:,}", "Overall SQL rate", f"{k['sql_rate']:.1f}%"])
@@ -203,21 +217,21 @@ def build_pdf(report, meta, ai_texts=None) -> bytes:
         )
     )
     story += [t, Spacer(1, 7 * mm), Paragraph("Key takeaways", st_["h1"])]
-    for c in report["charts"]:
+    for c in report.get("charts", []):
         if c["key"] in ("tiers", "sql_rate", "score_hist", "renewal", "decay"):
             text = ai_texts.get(c["key"], {}).get("insight", c["insight"])
             story.append(Paragraph(safe(text), st_["bullet"], bulletText="\u2022"))
             story.append(Spacer(1, 1.5 * mm))
-    for w in report["warnings"]:
+    for w in report.get("warnings", []):
         story.append(Paragraph(safe("Note: " + w), st_["small"]))
     story.append(PageBreak())
 
     # ---- one page per chart
-    for c in report["charts"]:
+    for c in report.get("charts", []):
         txt = ai_texts.get(c["key"], {})
         story += [
             Paragraph(safe(c["title"]), st_["h1"]),
-            _img(c["png"], W),
+            _img(c["png"], W, max_height=max_img_h),
             Spacer(1, 2 * mm),
             Paragraph("How to read this chart", st_["h2"]),
             Paragraph(safe(c["how"]), st_["body"]),
@@ -226,21 +240,45 @@ def build_pdf(report, meta, ai_texts=None) -> bytes:
             Paragraph("Recommended action", st_["h2"]),
             Paragraph(safe(txt.get("action", c["action"])), st_["body"]),
         ]
-        if c["key"] == "decay":
+        if c["key"] == "decay" and "simulation" in report and not report["simulation"].empty:
             sim = report["simulation"]
             rows = [list(sim.columns)] + [
                 [safe(v) if isinstance(v, str) else _fmt(v) for v in r] for r in sim.itertuples(index=False)
             ]
+            col_w = [W / len(sim.columns)] * len(sim.columns)
             story += [
-                Spacer(1, 4 * mm),
-                Paragraph(safe(report["sim_sentence"]), st_["body"]),
+                Spacer(1, 3 * mm),
+                Paragraph(safe(report.get("sim_sentence", "")), st_["body"]),
                 Spacer(1, 2 * mm),
-                _table(rows, [W * 0.4, W * 0.2, W * 0.2, W * 0.2]),
+                _table(rows, col_w),
             ]
         story.append(PageBreak())
 
+    # ---- before vs after decay comparison & difference recommendations
+    if "decay_comparison" in report and not report["decay_comparison"].empty:
+        comp_df = report["decay_comparison"]
+        story += [
+            Paragraph("Before vs. After Decay Comparison", st_["h1"]),
+            Paragraph(
+                safe(report.get("decay_summary", "Comparison of scoring outputs before and after applying decay.")),
+                st_["body"],
+            ),
+            Spacer(1, 3 * mm),
+        ]
+        comp_rows = [list(comp_df.columns)] + [
+            [safe(v) if isinstance(v, str) else _fmt(v) for v in r] for r in comp_df.itertuples(index=False)
+        ]
+        c_widths = [W * 0.34] + [(W * 0.66) / max(1, len(comp_df.columns) - 1)] * (len(comp_df.columns) - 1)
+        story.append(_table(comp_rows, c_widths))
+        story.append(Spacer(1, 4 * mm))
+        story.append(Paragraph("Difference-Driven Recommendations", st_["h2"]))
+        for rec in report.get("decay_recommendations", []):
+            story.append(Paragraph(safe(rec), st_["bullet"], bulletText="\u2022"))
+            story.append(Spacer(1, 1.5 * mm))
+        story.append(PageBreak())
+
     # ---- top priority accounts
-    top = report["top10"]
+    top = report.get("top10", pd.DataFrame())
     story += [
         Paragraph("Top 10 Priority MQL accounts", st_["h1"]),
         Paragraph("Highest composite score first, ties broken by estimated premium.", st_["small"]),
@@ -292,9 +330,9 @@ def build_pdf(report, meta, ai_texts=None) -> bytes:
                 "Scores, tiers and archetypes are rule-based signals of fit and engagement. They do not guarantee conversion or "
                 "revenue. "
                 + (
-                    "This report was built from synthetic data. "
-                    if "synthetic" in meta["label"].lower()
-                    else "This report was built from uploaded data. "
+                    "This report was built from default dataset files. "
+                    if "default" in meta["label"].lower()
+                    else "This report was built from uploaded CSV files. "
                 )
                 + "Insight text is computed from the numbers shown."
             ),
