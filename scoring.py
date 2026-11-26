@@ -6,13 +6,20 @@ RULES_TABLE = [
     ("Renewal Proximity", "25 pts <=30 days, 20 pts <=60, 15 pts <=90, 5 pts <=180", "Assumed"),
     ("Premium Size", "25 pts >=$2M, 20 pts >=$1M, 15 pts >=$500K, 10 pts >=$100K", "Assumed"),
     ("Industry Fit", "15 pts Target, 8 pts Adjacent, 0 pts Non-Target", "Assumed"),
-    ("Carrier", "10 pts for Aetna/UnitedHealth/Cigna, 5 pts otherwise", "Assumed"),
+    ("Carrier", "10 pts for Aetna/UnitedHealth/Cigna, 5 pts other known carrier, 0 if unknown", "Assumed"),
     ("Broker", "15 pts if broker is assigned", "Assumed"),
     ("Engagement Signals", "Email decay + optional webinar, quote, and proposal signals", "Assumed"),
     ("Total Score", "0.4 * Fit Score + 0.6 * Account Engagement (clipped 1..100)", "Assumed"),
     ("Priority MQL", "Total >=70, Premium >=$1M, Engagement >=15", "Assumed"),
     ("MQL", "Total >=50", "Assumed"),
 ]
+
+_NO_CARRIER = {"", "unknown", "nan", "none"}
+
+
+def _empty_scores(key_col, value_col):
+    """An empty score table that still has the key column, so merges never fail on missing data."""
+    return pd.DataFrame({key_col: pd.Series(dtype="object"), value_col: pd.Series(dtype="float64")})
 
 
 def run_pipeline(
@@ -35,8 +42,8 @@ def run_pipeline(
 
     eval_ts = pd.Timestamp(eval_date)
 
-    # Defaults for optional columns on core tables
-    if not em.empty:
+    # ---- email engagement per contact (always a table with a contact_id column) ----
+    if not em.empty and "contact_id" in em.columns:
         if "link_category" not in em.columns:
             em["link_category"] = ""
         if "event_date" not in em.columns:
@@ -51,9 +58,9 @@ def run_pipeline(
         else:
             em["decayed_points"] = em["points"]
 
-        email_s = em.groupby("contact_id")["decayed_points"].sum().clip(upper=50).rename("email_score")
+        email_s = em.groupby("contact_id")["decayed_points"].sum().clip(upper=50).rename("email_score").reset_index()
     else:
-        email_s = pd.Series(dtype=float, name="email_score")
+        email_s = _empty_scores("contact_id", "email_score")
 
     if not con.empty:
         if "email_status" not in con.columns:
@@ -74,7 +81,7 @@ def run_pipeline(
                 + web["downloaded"].fillna(0).clip(lower=0) * 3
                 + web["live"].fillna(0).clip(lower=0) * 2
             )
-            web_s = web.assign(_wpts=web_pts).groupby("contact_id")["_wpts"].sum().clip(upper=20).rename("webinar_score")
+            web_s = web.assign(_wpts=web_pts).groupby("contact_id")["_wpts"].sum().clip(upper=20).rename("webinar_score").reset_index()
             con = con.merge(web_s, on="contact_id", how="left").fillna({"webinar_score": 0})
         else:
             con["webinar_score"] = 0.0
@@ -109,8 +116,11 @@ def run_pipeline(
     ]:
         if col not in acc.columns:
             acc[col] = default_val
+    for col in ("industry_fit", "carrier", "broker_id"):
+        acc[col] = acc[col].fillna("").astype(str).str.strip()
 
     acc["est_premium"] = pd.to_numeric(acc["est_premium"], errors="coerce").fillna(0.0)
+    acc["renewal_date"] = pd.to_datetime(acc["renewal_date"], errors="coerce")
     acc = acc.merge(acc_eng, on="account_id", how="left").fillna({"distinct_engaged": 0, "account_engagement": 0.0})
 
     # Optional account-level signals from quotes and proposals
@@ -139,8 +149,9 @@ def run_pipeline(
         p = r["est_premium"]
         sz = 25 if p >= 2_000_000 else 20 if p >= 1_000_000 else 15 if p >= 500_000 else 10 if p >= 100_000 else 0
         ind = {"Target": 15, "Adjacent": 8, "Non-Target": 0}.get(str(r["industry_fit"]), 0)
-        car = 10 if r["carrier"] in ("Aetna", "UnitedHealth", "Cigna") else (5 if r["carrier"] else 0)
-        brk = 15 if r["broker_id"] else 0
+        carrier = str(r["carrier"]).strip()
+        car = 10 if carrier in ("Aetna", "UnitedHealth", "Cigna") else (0 if carrier.lower() in _NO_CARRIER else 5)
+        brk = 15 if str(r["broker_id"]).strip() else 0
         return ren + sz + ind + car + brk
 
     acc["fit_score"] = acc.apply(fit_score, axis=1)
