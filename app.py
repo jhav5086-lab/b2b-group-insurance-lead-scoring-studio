@@ -1,10 +1,9 @@
+import os
 import streamlit as st
 import pandas as pd
-import numpy as np
-import altair as alt
 from groq import Groq
+import altair as alt
 
-# Import our custom modular files
 import scoring
 import analytics
 import storyteller
@@ -27,43 +26,71 @@ REQUIRED_SCHEMAS = {
     "Accounts": ["account_id", "account_type"],
     "Contacts": ["contact_id", "account_id"],
     "Email Events": ["contact_id", "event_date"],
+    "Proposals": ["account_id"],
+    "Quotes": ["account_id"],
+    "Webinar Events": ["contact_id"],
 }
 
 
-def validate_and_normalize_uploads(acc_df: pd.DataFrame, con_df: pd.DataFrame, em_df: pd.DataFrame):
-    """Validate mandatory columns and normalize expected column data types."""
-    errors = []
-    for name, df, req_cols in [
-        ("Accounts", acc_df, REQUIRED_SCHEMAS["Accounts"]),
-        ("Contacts", con_df, REQUIRED_SCHEMAS["Contacts"]),
-        ("Email Events", em_df, REQUIRED_SCHEMAS["Email Events"]),
-    ]:
-        missing = [c for c in req_cols if c not in df.columns]
-        if missing:
-            errors.append(f"**{name}** missing required columns: `{', '.join(missing)}`")
+@st.cache_data
+def load_default_dataset():
+    """Load the provided default CSV dataset from disk if present."""
+    eval_date = pd.Timestamp("2024-09-15")
+    files = {
+        "accounts": "accounts.csv",
+        "contacts": "contacts.csv",
+        "emails": "email_events.csv",
+        "proposals": "proposals.csv",
+        "quotes": "quotes.csv",
+        "webinars": "webinar_events.csv",
+    }
+    loaded = {}
+    for key, fname in files.items():
+        if os.path.exists(fname):
+            loaded[key] = pd.read_csv(fname)
+        else:
+            loaded[key] = pd.DataFrame()
+    return (
+        loaded["accounts"],
+        loaded["contacts"],
+        loaded["emails"],
+        loaded["proposals"],
+        loaded["quotes"],
+        loaded["webinars"],
+        eval_date,
+    )
 
-    if errors:
-        return None, None, None, errors
 
+def validate_table(name: str, df: pd.DataFrame, req_cols: list[str]) -> list[str]:
+    missing = [c for c in req_cols if c not in df.columns]
+    if missing:
+        return [f"**{name}** missing required columns: `{', '.join(missing)}`"]
+    return []
+
+
+def normalize_tables(acc_df, con_df, em_df, prop_df, quo_df, web_df):
     acc = acc_df.copy()
     con = con_df.copy()
     em = em_df.copy()
+    prop = prop_df.copy() if prop_df is not None and not prop_df.empty else pd.DataFrame()
+    quo = quo_df.copy() if quo_df is not None and not quo_df.empty else pd.DataFrame()
+    web = web_df.copy() if web_df is not None and not web_df.empty else pd.DataFrame()
 
-    for col in ["account_id", "account_type", "industry_fit", "carrier", "broker_id"]:
+    for col in ["account_id", "account_name", "account_type", "industry", "industry_fit", "carrier", "broker_id"]:
         if col in acc.columns:
             acc[col] = acc[col].fillna("").astype(str).str.strip()
 
-    for col in ["contact_id", "account_id", "email_status"]:
+    for col in ["contact_id", "account_id", "email", "first_name", "last_name", "persona", "email_status", "domain_type"]:
         if col in con.columns:
             con[col] = con[col].fillna("").astype(str).str.strip()
 
-    for col in ["contact_id", "link_category"]:
+    for col in ["event_id", "contact_id", "link_category"]:
         if col in em.columns:
             em[col] = em[col].fillna("").astype(str).str.strip()
 
     for col in ["lives", "est_premium"]:
         if col in acc.columns:
-            acc[col] = pd.to_numeric(acc[col], errors="coerce").fillna(0)
+            acc[col] = pd.to_numeric(acc[col], errors="coerce").fillna(0.0)
 
     if "renewal_date" in acc.columns:
         acc["renewal_date"] = pd.to_datetime(acc["renewal_date"], errors="coerce")
@@ -72,104 +99,69 @@ def validate_and_normalize_uploads(acc_df: pd.DataFrame, con_df: pd.DataFrame, e
         em["event_date"] = pd.to_datetime(em["event_date"], errors="coerce")
         em = em.dropna(subset=["event_date"])
 
-    return acc, con, em, []
+    if not prop.empty:
+        if "account_id" in prop.columns:
+            prop["account_id"] = prop["account_id"].fillna("").astype(str).str.strip()
+        if "proposal_date" in prop.columns:
+            prop["proposal_date"] = pd.to_datetime(prop["proposal_date"], errors="coerce")
+        if "proposed_premium" in prop.columns:
+            prop["proposed_premium"] = pd.to_numeric(prop["proposed_premium"], errors="coerce").fillna(0.0)
+
+    if not quo.empty:
+        if "account_id" in quo.columns:
+            quo["account_id"] = quo["account_id"].fillna("").astype(str).str.strip()
+        if "quote_date" in quo.columns:
+            quo["quote_date"] = pd.to_datetime(quo["quote_date"], errors="coerce")
+        if "quoted_premium" in quo.columns:
+            quo["quoted_premium"] = pd.to_numeric(quo["quoted_premium"], errors="coerce").fillna(0.0)
+
+    if not web.empty:
+        if "contact_id" in web.columns:
+            web["contact_id"] = web["contact_id"].fillna("").astype(str).str.strip()
+        for wcol in ["attended", "minutes", "polls", "questions", "downloaded", "live"]:
+            if wcol in web.columns:
+                web[wcol] = pd.to_numeric(web[wcol], errors="coerce").fillna(0)
+
+    return acc, con, em, prop, quo, web
 
 
 # =============================================================================
-# 1. DATA GENERATOR (Fallback Default Data)
-# =============================================================================
-@st.cache_data
-def generate_default_data():
-    np.random.seed(42)
-    EVAL = pd.Timestamp("2024-09-15")
-    N_EMP, N_BRK = 2375, 125
-
-    inds = np.random.choice(
-        ["Healthcare", "Technology", "Finance", "Manufacturing", "Retail", "Transportation", "Professional Services"],
-        N_EMP,
-        p=[0.20, 0.15, 0.15, 0.15, 0.10, 0.10, 0.15],
-    )
-    ind_fit = np.where(
-        np.isin(inds, ["Healthcare", "Technology", "Finance", "Manufacturing", "Professional Services"]),
-        "Target",
-        np.where(np.isin(inds, ["Retail", "Transportation"]), "Adjacent", "Non-Target"),
-    )
-    lives = np.random.choice(
-        [25, 40, 60, 80, 120, 180, 250, 400, 650, 850, 1200, 1800, 2500, 4200, 5000],
-        N_EMP,
-        p=[0.08, 0.07, 0.07, 0.07, 0.08, 0.08, 0.08, 0.08, 0.07, 0.07, 0.07, 0.06, 0.05, 0.04, 0.03],
-    )
-    premium = np.round(lives * np.random.uniform(800, 1500, N_EMP), -3)
-    carriers = np.random.choice(["Aetna", "UnitedHealth", "Cigna", "Prudential", "Unknown"], N_EMP, p=[0.30, 0.25, 0.20, 0.15, 0.10])
-    brk_ids = [f"BRK-{i:04d}" for i in range(1, N_BRK + 1)]
-    assigned_brk = np.where(np.random.random(N_EMP) < 0.85, np.random.choice(brk_ids, N_EMP), "")
-    renewal_dates = [EVAL + pd.Timedelta(days=int(d)) for d in np.random.randint(0, 365, N_EMP)]
-
-    emp = pd.DataFrame({
-        "account_id": [f"ACC-{i:05d}" for i in range(1, N_EMP + 1)],
-        "account_type": "Employer",
-        "industry_fit": ind_fit,
-        "lives": lives,
-        "est_premium": premium,
-        "carrier": carriers,
-        "broker_id": assigned_brk,
-        "renewal_date": renewal_dates,
-    })
-
-    brk = pd.DataFrame({
-        "account_id": brk_ids,
-        "account_type": "Broker",
-        "industry_fit": "",
-        "lives": 0,
-        "est_premium": 0,
-        "carrier": "",
-        "broker_id": "",
-        "renewal_date": pd.NaT,
-    })
-    accounts = pd.concat([emp, brk], ignore_index=True)
-
-    n_c_emp = np.random.choice([2, 3, 4], N_EMP, p=[0.5, 0.35, 0.15])
-    acc_ids_rep = np.concatenate([np.repeat(emp["account_id"].values, n_c_emp), np.repeat(brk["account_id"].values, 1)])
-    contacts = pd.DataFrame({
-        "contact_id": [f"CON-{i:06d}" for i in range(1, len(acc_ids_rep) + 1)],
-        "account_id": acc_ids_rep,
-        "email_status": np.random.choice(["Active", "Unsubscribed", "Bounced"], len(acc_ids_rep), p=[0.95, 0.03, 0.02]),
-    })
-
-    n_ev = np.random.choice([0, 1, 2, 3, 5, 8, 12, 18, 25], len(contacts), p=[0.10, 0.10, 0.12, 0.12, 0.13, 0.13, 0.13, 0.10, 0.07])
-    n_ev[contacts["email_status"].values != "Active"] = 0
-    total_events = int(n_ev.sum())
-    ev_cat = np.random.choice(["generic", "content", "product", "high_intent"], total_events, p=[0.20, 0.40, 0.25, 0.15])
-    ev_days = np.random.randint(0, 180, total_events)
-    emails = pd.DataFrame({
-        "contact_id": np.repeat(contacts["contact_id"].values, n_ev),
-        "link_category": ev_cat,
-        "event_date": EVAL - pd.to_timedelta(ev_days, unit="D"),
-    })
-
-    return accounts, contacts, emails, EVAL
-
-
-# =============================================================================
-# 2. UI SETUP
+# 1. UI SETUP
 # =============================================================================
 st.title("🎯 B2B Lead Scoring Studio")
-st.caption("Live RevOps simulation with email decay, dynamic charts, and LLM-generated PDF reports.")
+st.caption("RevOps lead scoring with default 6-CSV dataset or custom uploads, decay = 0 support, before/after decay comparison, and PDF export.")
 
-default_acc, default_con, default_em, DEFAULT_EVAL = generate_default_data()
+(
+    def_acc,
+    def_con,
+    def_em,
+    def_prop,
+    def_quo,
+    def_web,
+    DEFAULT_EVAL,
+) = load_default_dataset()
 
 with st.sidebar:
     st.header("⚙️ Data & Settings")
     upload_acc = st.file_uploader("Upload Accounts CSV", type="csv")
     upload_con = st.file_uploader("Upload Contacts CSV", type="csv")
     upload_em = st.file_uploader("Upload Email Events CSV", type="csv")
+    upload_prop = st.file_uploader("Upload Proposals CSV", type="csv")
+    upload_quo = st.file_uploader("Upload Quotes CSV", type="csv")
+    upload_web = st.file_uploader("Upload Webinar Events CSV", type="csv")
 
     with st.expander("📋 Expected CSV Columns & Types"):
         st.markdown(
-            "**Accounts:** `account_id` (str, req), `account_type` (str, req), `industry_fit` (str), "
-            "`lives` (int), `est_premium` (float), `carrier` (str), `broker_id` (str), `renewal_date` (date)\n\n"
-            "**Contacts:** `contact_id` (str, req), `account_id` (str, req), `email_status` (str)\n\n"
-            "**Email Events:** `contact_id` (str, req), `event_date` (date, req), `link_category` (str)"
+            "**Accounts:** `account_id` (str, req), `account_type` (str, req), `account_name` (str), `industry` (str), "
+            "`industry_fit` (str), `lives` (int), `est_premium` (float), `carrier` (str), `broker_id` (str), `renewal_date` (date)\n\n"
+            "**Contacts:** `contact_id` (str, req), `account_id` (str, req), `email` (str), `first_name` (str), `last_name` (str), "
+            "`persona` (str), `email_status` (str), `domain_type` (str)\n\n"
+            "**Email Events:** `event_id` (str), `contact_id` (str, req), `link_category` (str), `event_date` (date, req)\n\n"
+            "**Proposals:** `proposal_id` (str), `account_id` (str, req), `proposal_date` (date), `proposed_premium` (float)\n\n"
+            "**Quotes:** `quote_id` (str), `account_id` (str, req), `product_code` (str), `quoted_premium` (float), "
+            "`quote_date` (date), `status` (str)\n\n"
+            "**Webinar Events:** `webinar_id` (str), `contact_id` (str, req), `attended` (int), `minutes` (int), "
+            "`polls` (int), `questions` (int), `downloaded` (int), `live` (int)"
         )
 
     st.divider()
@@ -177,53 +169,80 @@ with st.sidebar:
 
     st.divider()
     apply_decay = st.checkbox("Apply Email Decay", value=True)
-    decay_hl = st.slider("Decay Half-Life (Days)", 10, 90, 45) if apply_decay else 45
+    decay_hl = st.slider("Decay Half-Life (Days, 0 = No Decay)", min_value=0, max_value=90, value=45)
 
 # =============================================================================
-# 3. LOAD DATA & RUN PIPELINE
+# 2. LOAD DATA & RUN PIPELINE
 # =============================================================================
+raw_acc = pd.read_csv(upload_acc) if upload_acc else def_acc
+raw_con = pd.read_csv(upload_con) if upload_con else def_con
+raw_em = pd.read_csv(upload_em) if upload_em else def_em
+raw_prop = pd.read_csv(upload_prop) if upload_prop else def_prop
+raw_quo = pd.read_csv(upload_quo) if upload_quo else def_quo
+raw_web = pd.read_csv(upload_web) if upload_web else def_web
+
+any_upload = any([upload_acc, upload_con, upload_em, upload_prop, upload_quo, upload_web])
+
 schema_errors = []
-if upload_acc and upload_con and upload_em:
-    raw_acc = pd.read_csv(upload_acc)
-    raw_con = pd.read_csv(upload_con)
-    raw_em = pd.read_csv(upload_em)
-    df_acc, df_con, df_em, schema_errors = validate_and_normalize_uploads(raw_acc, raw_con, raw_em)
-    if schema_errors:
-        for err in schema_errors:
-            st.error(err)
-        st.info("Falling back to default synthetic dataset until all required columns are present.")
-        df_acc, df_con, df_em = default_acc, default_con, default_em
-    else:
-        st.sidebar.success("✅ Using validated uploaded data")
+for label, df, req in [
+    ("Accounts", raw_acc, REQUIRED_SCHEMAS["Accounts"]),
+    ("Contacts", raw_con, REQUIRED_SCHEMAS["Contacts"]),
+    ("Email Events", raw_em, REQUIRED_SCHEMAS["Email Events"]),
+]:
+    if not df.empty:
+        schema_errors.extend(validate_table(label, df, req))
+
+if schema_errors:
+    for err in schema_errors:
+        st.error(err)
+    st.warning("Reverting to default dataset files due to missing required columns.")
+    raw_acc, raw_con, raw_em, raw_prop, raw_quo, raw_web = def_acc, def_con, def_em, def_prop, def_quo, def_web
+    dataset_label = "Default Dataset (Fallback)"
 else:
-    if any([upload_acc, upload_con, upload_em]):
-        st.sidebar.warning("⚠️ Upload all three CSVs (Accounts, Contacts, Email Events) to override defaults.")
-    df_acc, df_con, df_em = default_acc, default_con, default_em
-    st.sidebar.info("ℹ️ Using default synthetic dataset")
+    dataset_label = "Uploaded CSV Dataset" if any_upload else "Default Provided Dataset"
+
+st.sidebar.info(f"ℹ️ Active source: **{dataset_label}**")
+
+df_acc, df_con, df_em, df_prop, df_quo, df_web = normalize_tables(
+    raw_acc, raw_con, raw_em, raw_prop, raw_quo, raw_web
+)
+
+effective_decay = bool(apply_decay and decay_hl > 0)
 
 with st.spinner("Calculating live scores..."):
-    scored_df = scoring.run_pipeline(df_acc, df_con, df_em, eval_date, apply_decay, decay_hl)
-    no_decay_df = scoring.run_pipeline(df_acc, df_con, df_em, eval_date, False) if apply_decay else scored_df
+    before_decay_df = scoring.run_pipeline(
+        df_acc, df_con, df_em, eval_date,
+        apply_decay=False, decay_halflife=0,
+        proposals=df_prop, quotes=df_quo, webinars=df_web,
+    )
+    scored_df = scoring.run_pipeline(
+        df_acc, df_con, df_em, eval_date,
+        apply_decay=effective_decay, decay_halflife=decay_hl,
+        proposals=df_prop, quotes=df_quo, webinars=df_web,
+    )
 
 # =============================================================================
-# 4. RAW DATA & CHARTS
+# 3. RAW DATA & CHARTS
 # =============================================================================
 with st.expander("🔍 View Raw Data & Scored Accounts"):
     st.write("### Scored Accounts (Top 50)")
-    st.dataframe(scored_df[["account_id", "tier", "archetype", "fit_score", "account_engagement", "total_score"]].head(50))
+    show_cols = [c for c in ["account_id", "tier", "archetype", "fit_score", "account_engagement", "total_score"] if c in scored_df.columns]
+    st.dataframe(scored_df[show_cols].head(50))
     st.write("### Raw Email Events (Top 20)")
     st.dataframe(df_em.head(20))
 
 st.divider()
 
-report = analytics.build_report(scored_df, no_decay_df, eval_date, apply_decay, decay_hl)
+report = analytics.build_report(scored_df, before_decay_df, eval_date, effective_decay, decay_hl)
 
 col1, col2 = st.columns(2)
 
 with col1:
     st.subheader("Tier Distribution")
-    tier_counts = scored_df[scored_df["account_type"] == "Employer"]["tier"].value_counts().reset_index()
-    tier_counts.columns = ["Tier", "Count"]
+    emp_view = scored_df[scored_df["account_type"] == "Employer"] if "account_type" in scored_df.columns else scored_df
+    tier_counts = emp_view["tier"].value_counts().reset_index() if len(emp_view) else pd.DataFrame(columns=["Tier", "Count"])
+    if not tier_counts.empty:
+        tier_counts.columns = ["Tier", "Count"]
 
     c1 = (
         alt.Chart(tier_counts)
@@ -244,8 +263,9 @@ with col1:
 
 with col2:
     st.subheader("Archetype Distribution")
-    arch_counts = scored_df[scored_df["account_type"] == "Employer"]["archetype"].value_counts().reset_index()
-    arch_counts.columns = ["Archetype", "Count"]
+    arch_counts = emp_view["archetype"].value_counts().reset_index() if len(emp_view) else pd.DataFrame(columns=["Archetype", "Count"])
+    if not arch_counts.empty:
+        arch_counts.columns = ["Archetype", "Count"]
 
     c2 = (
         alt.Chart(arch_counts)
@@ -264,32 +284,50 @@ with col2:
     st.info(f"**Insight:** {polished_a['insight']}\n\n**Action:** {polished_a['action']}")
 
 # =============================================================================
+# 4. BEFORE VS AFTER DECAY COMPARISON & RECOMMENDATIONS
+# =============================================================================
+st.divider()
+st.subheader("⚖️ Before vs. After Decay Comparison")
+st.caption(report.get("decay_summary", ""))
+st.dataframe(report["decay_comparison"], use_container_width=True)
+
+st.markdown("### 💡 Difference-Based Recommendations")
+for rec in report.get("decay_recommendations", []):
+    st.write(f"- {rec}")
+
+# =============================================================================
 # 5. PDF EXPORT
 # =============================================================================
 st.divider()
 st.subheader("📄 Export Executive Report")
 
+if "pdf_bytes" not in st.session_state:
+    st.session_state["pdf_bytes"] = None
+
 if st.button("Generate PDF Report"):
     with st.spinner("Generating multi-page PDF..."):
         try:
             meta = {
-                "label": "Uploaded Data" if (upload_acc and upload_con and upload_em and not schema_errors) else "Synthetic Data",
+                "label": dataset_label,
                 "eval_date": eval_date,
                 "half_life": decay_hl,
-                "decay": apply_decay,
+                "decay": effective_decay,
             }
             ai_texts = {
                 "tiers": polished_t,
                 "archetypes": polished_a,
                 "decay": polished_a,
             }
-            pdf_bytes = pdf_generator.build_pdf(report, meta, ai_texts)
-            st.download_button(
-                label="⬇️ Download PDF",
-                data=pdf_bytes,
-                file_name="B2B_Lead_Scoring_Report.pdf",
-                mime="application/pdf",
-            )
-            st.success("PDF generated successfully! Click the download button above.")
+            st.session_state["pdf_bytes"] = pdf_generator.build_pdf(report, meta, ai_texts)
+            st.success("PDF generated successfully! Click the download button below.")
         except Exception as e:
+            st.session_state["pdf_bytes"] = None
             st.error(f"Failed to generate PDF: {e}")
+
+if st.session_state["pdf_bytes"]:
+    st.download_button(
+        label="⬇️ Download PDF",
+        data=st.session_state["pdf_bytes"],
+        file_name="B2B_Lead_Scoring_Report.pdf",
+        mime="application/pdf",
+    )
