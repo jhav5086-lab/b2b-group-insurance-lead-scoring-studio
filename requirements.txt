@@ -1,8 +1,8 @@
 streamlit
-altair
-matplotlib
-fpdf2
+groq
 pandas
 numpy
-sentence-transformers
-groq
+altair
+reportlab
+pillow
+vl-convert-python
