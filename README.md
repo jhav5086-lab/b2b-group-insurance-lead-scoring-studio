@@ -1,45 +1,54 @@
-# B2B Group Insurance Lead Scoring & Guarded RAG Studio
+<div align="center">
 
-A deterministic RevOps scoring and guarded Retrieval-Augmented Generation (RAG) application for B2B group insurance account prioritization, diagnostic visualization, PDF reporting, and artifact-grounded Q&A.
+# 🎯 B2B Lead Scoring Analytics Engine
 
-## Overview
+**A dynamic RevOps intelligence platform that recalculates live lead scores, simulates email decay, and generates executive PDF reports.**
 
-Lead scoring and account prioritization logic often sits inside black-box spreadsheets or static dashboards. This studio pairs:
-- **Deterministic scoring in Python** (`0.4 * fit_score + 0.6 * engagement_score + 0.8 * broker_bonus`, qualification tiers, and behavioral archetypes)
-- **Custom CSV upload with synthetic fallback** (upload your own account CSV or run immediately on the deterministic default synthetic dataset, plus download a ready-to-use sample CSV template)
-- **Diagnostic charts, interpretations, and PDF export** (5 interactive Altair charts in the UI with data-backed interpretations, recommended actions, and a downloadable multi-page Matplotlib + FPDF report)
-- **Guarded RAG pipeline** (semantic retrieval over `embeddings/chunks.json`, numeric and citation verification, false-premise pushback, hypothetical math guardrails, and an evaluation test suite in `eval_cases.json`)
+[![Live Demo](https://img.shields.io/badge/🚀_Live_Demo-Try_it_now-FF4B4B?style=for-the-badge&logo=streamlit&logoColor=white)](https://b2b-lead-scoring-rag-kazhjrkrfko5tzneybtycs.streamlit.app/)
+[![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
+[![Groq](https://img.shields.io/badge/LLM-Groq-F55036?style=for-the-badge)](https://groq.com/)
 
-## Repository Structure
+</div>
 
-```text
-revops-lead-scoring-rag-studio/
-├── app.py
-├── requirements.txt
-├── eval_cases.json
-├── README.md
-├── data/
-│   └── sample_b2b_accounts.csv
-└── embeddings/
-    └── chunks.json
-```
+---
 
-## Quick Start
+## 📌 Overview
 
-1. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-2. Configure Streamlit secrets (`.streamlit/secrets.toml` or Streamlit Community Cloud Secrets):
-   ```toml
-   GROQ_API_KEY = "your_groq_api_key"
-   ```
-3. Run the application:
-   ```bash
-   streamlit run app.py
-   ```
+Traditional dashboards show static lead scores. This application is a **live simulation engine**. 
 
-## Model Caveats
+Upload your raw CSVs (Accounts, Contacts, Email Events), or use our synthetic dataset, and the app will recalculate the entire scoring pipeline in real-time. 
 
-- Composite scores, qualification tiers, and behavioral archetypes reflect rule-based alignment and engagement signals—they do not guarantee conversion or closed-won revenue.
-- Factual model answers are constrained to `embeddings/chunks.json` and the active dataset summary, with post-generation checks for numbers and source citations.
+You can toggle an **Email Decay** simulation (half-life) to see how engagement fades over time, and instantly see the impact on your MQLs and Priority MQLs.
+
+### 🛡️ The "Safety Net" Architecture
+This app solves the AI hallucination problem in high-stakes data environments:
+1.  **100% Python Math:** All Fit Scores, Engagements, and Tiers are calculated in Pandas. The LLM never touches the numbers.
+2.  **LLM as Storyteller:** The LLM receives the exact, calculated numbers and writes a 2-sentence insight and 1-sentence recommendation.
+3.  **Numeric Guardrails:** A `storyteller.py` safety net verifies that every number the LLM writes exists in the calculated data. If it hallucinates a number, the LLM text is rejected, and the Python-computed text is used.
+
+---
+
+## ✨ Features
+
+- **Dynamic Data Ingestion:** Upload your own CSVs or use the built-in synthetic dataset.
+- **Email Decay Simulation:** Toggle a half-life decay on email events to see how it changes lead engagement over time.
+- **Live Scoring Engine:** Recalculates Total Scores, Tiers, and Archetypes instantly based on your date and decay settings.
+- **Executive PDF Export:** Generates a beautiful, multi-page PDF report using `reportlab` with charts, insights, and a top-10 priority account table.
+- **LLM Insights:** Writes business-ready insights based on the exact Python-calculated numbers.
+
+---
+
+## 🚀 Quick Start
+
+### Run Locally
+
+```bash
+git clone https://github.com/jhav5086-lab/B2B-Lead-Scoring-RAG.git
+cd B2B-Lead-Scoring-RAG
+
+pip install -r requirements.txt
+
+mkdir -p .streamlit
+echo 'GROQ_API_KEY = "your_key_here"' > .streamlit/secrets.toml
+
+streamlit run app.py
